@@ -1,0 +1,1155 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:intl/intl.dart';
+import 'package:intl/date_symbol_data_local.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/data/latest.dart' as tz;
+import 'package:timezone/timezone.dart' as tzlib;
+import 'models/time_entry_model.dart';
+import 'services/api_service.dart';
+import 'services/time_entry_service.dart';
+import 'services/sync_service.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await initializeDateFormatting('fr_FR', null);
+  tz.initializeTimeZones();
+  tzlib.setLocalLocation(tzlib.getLocation('Europe/Paris'));
+  
+  bool isLoggedIn = false;
+  String firstName = '';
+  String lastName = '';
+  
+  try {
+    // Try to get shared preferences
+    final prefs = await SharedPreferences.getInstance();
+    isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
+    firstName = prefs.getString('firstName') ?? '';
+    lastName = prefs.getString('lastName') ?? '';
+  } catch (e) {
+    // Ignore errors initializing SharedPreferences
+  }
+  
+  runApp(
+    ProviderScope(
+      child: MyApp(
+        isLoggedIn: isLoggedIn,
+        firstName: firstName,
+        lastName: lastName,
+      ),
+    ),
+  );
+}
+
+
+
+class SuccessScreen extends StatelessWidget {
+  final String firstName;
+  final String lastName;
+  final Map<String, Map<String, String>> taskHours;
+  final String filePath;
+
+  const SuccessScreen({
+    super.key,
+    required this.firstName,
+    required this.lastName,
+    required this.taskHours,
+    required this.filePath,
+  });
+
+  Future<void> _deleteAndNavigateBack(BuildContext context) async {
+    try {
+      if (!context.mounted) return;
+      
+      // Delete the entry from the backend and local storage
+      final apiService = ApiService();
+      final timeEntryService = TimeEntryService();
+      final today = DateTime.now();
+      final formattedDate = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+      final employeeId = '$firstName $lastName';
+      
+      // Attempt to delete from backend
+      await apiService.deleteTimeEntry(employeeId, formattedDate);
+
+      // Suppression locale sans créer d'entrée à zéro
+      await timeEntryService.deleteTimeEntryByIdAndDate(employeeId, formattedDate);
+      
+      // Clear the last entry date to allow corrections
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('last_entry_date');
+      
+      // Check if the widget is still mounted before using context
+      if (!context.mounted) return;
+      
+      // Ensure we have a valid context and navigator state
+      if (Navigator.canPop(context)) {
+        Navigator.popUntil(context, (route) => route.isFirst);
+      }
+      
+      // Navigate to TaskSelectionScreen with a flag to indicate this is a correction
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => TaskSelectionScreen(
+            firstName: firstName,
+            lastName: lastName,
+            isCorrection: true,  // Add this flag
+          ),
+        ),
+      );
+      
+      // Show a snackbar to confirm the correction
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Vous pouvez maintenant corriger vos heures'),
+            duration: Duration(seconds: 3),
+            backgroundColor: Colors.blue,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        // If navigation fails, try to ensure we're at least at the root
+        if (Navigator.canPop(context)) {
+          Navigator.popUntil(context, (route) => route.isFirst);
+        }
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: false, // Prevent back button from doing anything
+      child: Scaffold(
+        backgroundColor: Colors.white,
+        appBar: AppBar(
+          title: const Text('Succès'),
+          backgroundColor: Theme.of(context).colorScheme.primary,
+          foregroundColor: Colors.white,
+          automaticallyImplyLeading: false,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.logout),
+              onPressed: () async {
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setBool('isLoggedIn', false);
+                if (!context.mounted) return;
+                Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(builder: (context) => const NameInputScreen()),
+                );
+              },
+              tooltip: 'Déconnexion',
+            ),
+          ],
+        ),
+        body: SafeArea(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.check_circle,
+                    color: Colors.green,
+                    size: 80,
+                  ),
+                  const SizedBox(height: 24),
+                  const Text(
+                    'Enregistrement réussi !',
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'Vos heures ont bien été enregistrées.',
+                    style: TextStyle(fontSize: 16),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 32),
+                  const SizedBox(height: 16),
+                  GestureDetector(
+                    onTap: () => _deleteAndNavigateBack(context),
+                    child: const Text(
+                      'J\'ai fait une erreur',
+                      style: TextStyle(
+                        color: Colors.blue,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class MyApp extends StatelessWidget {
+  final bool isLoggedIn;
+  final String firstName;
+  final String lastName;
+  
+  const MyApp({
+    super.key,
+    this.isLoggedIn = false,
+    this.firstName = '',
+    this.lastName = '',
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Arjolle Présence',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.red),
+        useMaterial3: true,
+      ),
+      home: isLoggedIn 
+          ? TaskSelectionScreen(
+              firstName: firstName,
+              lastName: lastName,
+            )
+          : const NameInputScreen(),
+      debugShowCheckedModeBanner: false,
+    );
+  }
+}
+
+class NameInputScreen extends StatefulWidget {
+  const NameInputScreen({super.key});
+  
+  static const routeName = '/name_input';
+
+  @override
+  State<NameInputScreen> createState() => _NameInputScreenState();
+}
+
+class _NameInputScreenState extends State<NameInputScreen> {
+  final _formKey = GlobalKey<FormState>();
+  final _firstNameController = TextEditingController();
+  final _lastNameController = TextEditingController();
+  bool _isButtonEnabled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _firstNameController.addListener(_updateButtonState);
+    _lastNameController.addListener(_updateButtonState);
+  }
+
+  @override
+  void dispose() {
+    _firstNameController.dispose();
+    _lastNameController.dispose();
+    super.dispose();
+  }
+
+  void _updateButtonState() {
+    setState(() {
+      _isButtonEnabled = _firstNameController.text.trim().isNotEmpty &&
+          _lastNameController.text.trim().isNotEmpty;
+    });
+  }
+
+  Future<void> _navigateToTaskSelection() async {
+    if (_formKey.currentState!.validate()) {
+      final firstName = _firstNameController.text.trim();
+      final lastName = _lastNameController.text.trim();
+      
+      try {
+        // Try to save user data
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('isLoggedIn', true);
+        await prefs.setString('firstName', firstName);
+        await prefs.setString('lastName', lastName);
+
+        // Always clear last_entry_date so a new user always sees the task screen
+        await prefs.remove('last_entry_date');
+      } catch (e) {
+        // debugPrint removed for production
+//'Error saving login state: $e');
+        // Continue with navigation even if saving to prefs fails
+      }
+      
+      if (!mounted) return;
+      
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => TaskSelectionScreen(
+            firstName: firstName,
+            lastName: lastName,
+          ),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Identification'),
+        backgroundColor: Theme.of(context).colorScheme.primary,
+        foregroundColor: Colors.white,
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(
+                Icons.person_outline,
+                size: 80,
+                color: Colors.black,
+              ),
+              const SizedBox(height: 32),
+              TextFormField(
+                controller: _firstNameController,
+                decoration: const InputDecoration(
+                  labelText: 'Prénom',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.person_outline),
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Veuillez entrer votre prénom';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _lastNameController,
+                decoration: const InputDecoration(
+                  labelText: 'Nom',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.person_outline),
+                ),
+                validator: (value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Veuillez entrer votre nom';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 32),
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton(
+                  onPressed: _isButtonEnabled ? _navigateToTaskSelection : null,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.primary,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                  child: const Text(
+                    'Continuer',
+                    style: TextStyle(fontSize: 16),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class TaskSelectionScreen extends StatefulWidget {
+  final String firstName;
+  final String lastName;
+  final bool isCorrection;
+
+  const TaskSelectionScreen({
+    super.key,
+    required this.firstName,
+    required this.lastName,
+    this.isCorrection = false,
+  });
+
+  @override
+  State<TaskSelectionScreen> createState() => _TaskSelectionScreenState();
+}
+
+class _TaskSelectionScreenState extends State<TaskSelectionScreen> {
+  FlutterLocalNotificationsPlugin? _notifications;
+
+  @override
+  void dispose() {
+    // Dispose all TextEditingControllers in _hoursControllers
+    for (final sectionControllers in _hoursControllers.values) {
+      for (final controller in sectionControllers.values) {
+        controller.dispose();
+      }
+    }
+    super.dispose(); // Always call this as the last statement
+  }
+  Map<String, Map<String, bool>> _selectedTasks = {
+    'SAS': {'Commande': false, 'MEB': false, 'Vigne': false, 'Traitement': false},
+    'SCEA': {'Commande': false, 'MEB': false, 'Vigne': false, 'Traitement': false},
+    'CUMA': {'Commande': false, 'MEB': false, 'Vigne': false, 'Traitement': false},
+  };
+
+  Map<String, Map<String, String>> _taskHours = {
+    'SAS': {'Commande': '', 'MEB': '', 'Vigne': '', 'Traitement': ''},
+    'SCEA': {'Commande': '', 'MEB': '', 'Vigne': '', 'Traitement': ''},
+    'CUMA': {'Commande': '', 'MEB': '', 'Vigne': '', 'Traitement': ''},
+  };
+
+  final List<String> _sections = ['SAS', 'SCEA', 'CUMA'];
+  final List<String> _tasks = ['Commande', 'MEB', 'Vigne', 'Traitement'];
+  final Map<String, bool> _expandedSections = {
+    'SAS': false,
+    'SCEA': false,
+    'CUMA': false,
+  };
+
+  late SharedPreferences _prefs;
+  
+  @override
+  @override
+  void initState() {
+    super.initState();
+    _initNotifications();
+    _initPrefsAndCheckEntry();
+  }
+
+  void _initNotifications() async {
+    _notifications = FlutterLocalNotificationsPlugin();
+    const AndroidInitializationSettings androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const DarwinInitializationSettings iosInit = DarwinInitializationSettings();
+    const InitializationSettings initSettings = InitializationSettings(android: androidInit, iOS: iosInit);
+    await _notifications!.initialize(initSettings);
+    _scheduleDailyReminderIfNeeded();
+  }
+
+  Future<void> _scheduleDailyReminderIfNeeded() async {
+    // Check if today's entry is filled
+    bool filled = await _isTodayFilled();
+    if (!filled) {
+      final now = DateTime.now();
+      final notifTime = _getFrenchNotificationTime(now);
+      final scheduled = tzlib.TZDateTime(
+        tzlib.getLocation('Europe/Paris'),
+        now.year,
+        now.month,
+        now.day,
+        notifTime.hour,
+        notifTime.minute,
+      );
+
+      if (now.isBefore(scheduled)) {
+        await _notifications?.zonedSchedule(
+          0,
+          "N'oubliez pas de remplir vos heures !",
+          '',
+          scheduled,
+          const NotificationDetails(
+            android: AndroidNotificationDetails('daily_reminder', 'Daily Reminder'),
+            iOS: DarwinNotificationDetails(),
+          ),
+          androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+          uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+          matchDateTimeComponents: DateTimeComponents.time,
+        );
+      }
+    } else {
+      await _notifications?.cancel(0);
+    }
+  }
+
+  // Returns true if today's entry is filled
+  Future<bool> _isTodayFilled() async {
+    // Implement your logic to check if today's hours are filled
+    // For now, always false (should be replaced with real check)
+    // You can use your existing _checkTodaysEntry logic or similar
+    return false;
+  }
+
+  // Get notification time based on French DST
+  TimeOfDay _getFrenchNotificationTime(DateTime date) {
+    final lastMarch = _lastSundayOfMonth(date.year, 3);
+    final lastOctober = _lastSundayOfMonth(date.year, 10);
+    if (date.isAfter(lastMarch) && date.isBefore(lastOctober)) {
+      // Summer: 13:15
+      return const TimeOfDay(hour: 13, minute: 15);
+    } else {
+      // Winter: 17:30
+      return const TimeOfDay(hour: 17, minute: 30);
+    }
+  }
+
+  DateTime _lastSundayOfMonth(int year, int month) {
+    // Find the last day of the month
+    final lastDay = DateTime(year, month + 1, 0);
+    // Subtract days until Sunday
+    return lastDay.subtract(Duration(days: lastDay.weekday % 7));
+  }
+
+  
+  Future<void> _initPrefsAndCheckEntry() async {
+    _prefs = await SharedPreferences.getInstance();
+    await _checkDailyReset();
+    await _loadSavedData();
+    await _checkTodaysEntry();
+  }
+  
+  Future<void> _checkTodaysEntry() async {
+    // After checking, reschedule notification
+    await _scheduleDailyReminderIfNeeded();
+
+    // Skip the check if this is a correction
+    if (widget.isCorrection) {
+      // Reset the task data for correction
+      _resetTaskData();
+      return;
+    }
+    
+    final today = DateFormat('yyyy-MM-dd').format(DateTime.now());
+    final lastEntryDate = _prefs.getString('last_entry_date');
+    final firstName = widget.firstName;
+    final lastName = widget.lastName;
+    
+    if (lastEntryDate == today && mounted) {
+      // User already entered hours today, show success screen
+      final filePath = '${(await getApplicationDocumentsDirectory()).path}/task_hours_${firstName}_${lastName}_$today.txt';
+      if (mounted) {
+        _showSuccessScreen(filePath);
+      }
+    }
+  }
+  
+  // Helper method to update selected tasks and notify listeners
+  void updateSelectedTask(String section, String task, bool value) {
+    setState(() {
+      _selectedTasks[section] ??= {};
+      _selectedTasks[section]![task] = value;
+      if (!value) {
+        _taskHours[section]?[task] = '';
+      }
+      _saveData();
+    });
+  }
+  
+  // Helper method to update task hours and notify listeners
+  void updateTaskHours(String section, String task, String value) {
+    setState(() {
+      _taskHours[section] ??= {};
+      _taskHours[section]![task] = value;
+      _saveData();
+    });
+  }
+  
+  // Save data to SharedPreferences
+  Future<void> _saveData() async {
+    // After saving, reschedule notification
+    await _scheduleDailyReminderIfNeeded();
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final data = {
+        'selected': _selectedTasks,
+        'hours': _taskHours,
+      };
+      await prefs.setString('savedTasks', jsonEncode(data));
+    } catch (e) {
+      if (mounted) {
+        _showErrorDialog('Erreur lors de la sauvegarde des données');
+      }
+    }
+  }
+  
+  // Load saved data from SharedPreferences
+  Future<void> _loadSavedData() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedData = prefs.getString('savedTasks');
+      
+      if (savedData != null) {
+        final Map<String, dynamic> data = jsonDecode(savedData);
+        
+        Map<String, Map<String, bool>> selectedTasks = {};
+        Map<String, Map<String, String>> taskHours = {};
+        
+        // Restore selected tasks
+        if (data['selected'] != null) {
+          selectedTasks = Map<String, Map<String, bool>>.from(
+            Map<String, dynamic>.from(data['selected']).map(
+              (key, value) => MapEntry(key, Map<String, bool>.from(value))
+            )
+          );
+        }
+        
+        // Restore task hours
+        if (data['hours'] != null) {
+          taskHours = Map<String, Map<String, String>>.from(
+            Map<String, dynamic>.from(data['hours']).map(
+              (key, value) => MapEntry(key, Map<String, String>.from(value))
+            )
+          );
+        }
+        
+        if (mounted) {
+          setState(() {
+            _selectedTasks = selectedTasks;
+            _taskHours = taskHours;
+          });
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        _showErrorDialog('Erreur lors du chargement des données sauvegardées');
+      }
+    }
+  }
+  
+  // Save hours to a text file
+  // Success Screen Widget
+  void _showSuccessScreen(String filePath) {
+    if (!mounted) return;
+    
+    // Use a post-frame callback to ensure the navigation happens after the current build
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      
+      // Navigate to success screen
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (context) => SuccessScreen(
+            firstName: widget.firstName,
+            lastName: widget.lastName,
+            taskHours: _taskHours,
+            filePath: filePath,
+          ),
+        ),
+      );
+    });
+  }
+
+  Future<void> _saveHoursToFile() async {
+    try {
+      final firstName = widget.firstName;
+      final lastName = widget.lastName;
+      final today = DateTime.now();
+      final formattedDate = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+      
+      // Calculate total hours worked
+      double totalHoursWorked = 0.0;
+      final StringBuffer buffer = StringBuffer();
+      buffer.writeln('Date: $formattedDate');
+      buffer.writeln('Nom: $firstName $lastName');
+      buffer.writeln('\nHeures par tâche:');
+      
+      // Iterate through each section and task
+      for (String section in _sections) {
+        if (_expandedSections[section] == true) {
+          buffer.writeln('\n$section:');
+          for (String task in _tasks) {
+            if (_selectedTasks[section]?[task] == true) {
+              final hours = double.tryParse(_taskHours[section]?[task] ?? '0') ?? 0;
+              if (hours > 0) {
+                buffer.writeln('  $task: $hours heures');
+                totalHoursWorked += hours;
+              }
+            }
+          }
+        }
+      }
+      
+      // Add total hours worked to the summary
+      buffer.writeln('\nTotal des heures: $totalHoursWorked heures');
+      // Save to file
+      final directory = await getApplicationDocumentsDirectory();
+      final filePath = '${directory.path}/task_hours_${firstName}_${lastName}_$formattedDate.txt';
+      final file = File(filePath);
+      await file.writeAsString(buffer.toString());
+      
+      // Save the last entry date
+      await _prefs.setString('last_entry_date', formattedDate);
+      
+      // Create a TimeEntryModel and save it using SyncService
+      
+      // Create a map of all tasks and their hours
+      Map<String, double> taskHoursMap = {};
+      double tasksTotalHours = 0.0;
+      
+      // Collect all selected tasks and their hours
+      for (String section in _sections) {
+        for (String task in _tasks) {
+          // Check if task is selected
+          if (_selectedTasks[section]?[task] == true) {
+            // Get hours for this task
+            final hours = double.tryParse(_taskHours[section]?[task] ?? '0') ?? 0;
+            if (hours > 0) {
+              // Add to the task hours map with section-task as the key
+              taskHoursMap['$section - $task'] = hours;
+              tasksTotalHours += hours;
+            }
+          }
+        }
+      }
+      
+      // Create the time entry with all task hours
+      final timeEntry = TimeEntryModel(
+        employeeId: '${widget.firstName} ${widget.lastName}',
+        firstName: widget.firstName,
+        lastName: widget.lastName,
+        date: formattedDate,
+        hoursWorked: tasksTotalHours, // Use the calculated total from tasks
+        taskHours: taskHoursMap,
+      );
+
+      // Prevent multiple local files for the same user/date
+      final timeEntryService = TimeEntryService();
+      final allEntries = await timeEntryService.getAllTimeEntries();
+      final existingIndex = allEntries.indexWhere((e) => e.employeeId == timeEntry.employeeId && e.date == timeEntry.date);
+      if (existingIndex != -1) {
+        // Update the existing entry
+        await timeEntryService.saveTimeEntry(timeEntry);
+      } else {
+        // Save as new entry (should only happen once per day)
+        await timeEntryService.saveTimeEntry(timeEntry);
+      }
+
+      // Synchronize immediately: upsert to backend and mark as synced
+      final syncService = SyncService();
+      await syncService.saveAndSync(timeEntry);
+
+      if (mounted) {
+        _showSuccessScreen(filePath);
+      }
+    } catch (e) {
+      if (mounted) {
+        _showErrorDialog('Erreur lors de l\'enregistrement: $e');
+      }
+    }
+  }
+
+  void _resetTaskData() {
+    setState(() {
+      // Reset selected tasks with default false values
+      _selectedTasks = {
+        'SAS': {'Commande': false, 'MEB': false, 'Vigne': false, 'Traitement': false},
+        'SCEA': {'Commande': false, 'MEB': false, 'Vigne': false, 'Traitement': false},
+        'CUMA': {'Commande': false, 'MEB': false, 'Vigne': false, 'Traitement': false},
+      };
+      
+      // Reset task hours with empty strings
+      _taskHours = {
+        'SAS': {'Commande': '', 'MEB': '', 'Vigne': '', 'Traitement': ''},
+        'SCEA': {'Commande': '', 'MEB': '', 'Vigne': '', 'Traitement': ''},
+        'CUMA': {'Commande': '', 'MEB': '', 'Vigne': '', 'Traitement': ''},
+      };
+      
+      // Reset expanded sections by clearing and re-adding keys
+      _expandedSections.clear();
+      _expandedSections.addAll({
+        'SAS': false,
+        'SCEA': false,
+        'CUMA': false,
+      });
+    });
+  }
+
+  Future<void> _checkDailyReset() async {
+    final prefs = await SharedPreferences.getInstance();
+    final lastResetDate = prefs.getString('lastResetDate');
+    final now = DateTime.now();
+    final today = '${now.day}-${now.month}-${now.year}';
+    
+    if (lastResetDate != today) {
+      // It's a new day, reset all task data
+      _resetTaskData();
+      await prefs.setString('lastResetDate', today);
+      
+      // Also clear any saved data from previous days
+      await prefs.remove('selected_tasks');
+      await prefs.remove('task_hours');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final formattedDate = DateFormat('EEEE d MMMM y', 'fr_FR').format(DateTime.now());
+    
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Sélection des tâches'),
+          backgroundColor: Theme.of(context).colorScheme.primary,
+          foregroundColor: Colors.white,
+          automaticallyImplyLeading: false, // Remove back button
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.logout),
+              onPressed: _logout,
+              tooltip: 'Déconnexion',
+            ),
+          ],
+        ),
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Bienvenue, ${widget.firstName} ${widget.lastName}',
+                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                formattedDate,
+                style: const TextStyle(fontSize: 16, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              ..._sections.map((section) => Card(
+                margin: const EdgeInsets.only(bottom: 16),
+                elevation: 2,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Theme(
+                  data: Theme.of(context).copyWith(
+                    dividerColor: Colors.transparent, // Remove the divider
+                  ),
+                  child: ExpansionTile(
+                    tilePadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                    title: Text(
+                      section,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    childrenPadding: const EdgeInsets.only(bottom: 8, left: 16, right: 16),
+                    initiallyExpanded: _expandedSections[section] ?? false,
+                    onExpansionChanged: (expanded) {
+                      setState(() {
+                        _expandedSections[section] = expanded;
+                      });
+                    },
+                    children: _tasks.map((task) => _buildTaskItem(section, task)).toList(),
+                  ),
+                ),
+              )),
+              const SizedBox(height: 16),
+              // Save Button
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+                child: ElevatedButton(
+                  onPressed: _showSummaryDialog,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.primary,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 2,
+                  ),
+                  child: const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.save, size: 24),
+                      SizedBox(width: 12),
+                      Text(
+                        'Enregistrer',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showErrorDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Erreur de saisie'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('isLoggedIn', false);
+    
+    if (!mounted) return;
+    
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(builder: (context) => const NameInputScreen()),
+    );
+  }
+
+  Future<void> _showSummaryDialog() async {
+    // Validate all selected tasks have hours
+    for (final section in _selectedTasks.keys) {
+      for (final task in _selectedTasks[section]!.keys) {
+        if (_selectedTasks[section]![task] == true && (_taskHours[section]?[task]?.isEmpty ?? true)) {
+          _showErrorDialog('Veuillez entrer un nombre d\'heures pour toutes les tâches sélectionnées');
+          return;
+        }
+      }
+    }
+    
+    // Prepare recap content
+    int totalHours = 0;
+    final List<Widget> recapItems = [];
+    
+    // Add tasks and their hours to recap
+    for (final section in _selectedTasks.keys) {
+      bool hasTasks = false;
+      final sectionItems = <Widget>[];
+      
+      for (final task in _selectedTasks[section]!.keys) {
+        if ((_selectedTasks[section]?[task] ?? false) && _taskHours[section]?[task]?.isNotEmpty == true) {
+          final hours = int.tryParse(_taskHours[section]![task]!) ?? 0;
+          totalHours += hours;
+          sectionItems.add(Text(
+            '  • $task: $hours heure${hours > 1 ? 's' : ''}',
+            style: const TextStyle(fontSize: 15),
+          ));
+          hasTasks = true;
+        }
+      }
+      
+      if (hasTasks) {
+        recapItems.add(Text(
+          '$section:',
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+        ));
+        recapItems.addAll(sectionItems);
+        recapItems.add(const SizedBox(height: 8));
+      }
+    }
+    
+    // Add total hours
+    recapItems.add(Padding(
+      padding: const EdgeInsets.only(top: 8.0),
+      child: Text(
+        'Total des heures: $totalHours heure${totalHours > 1 ? 's' : ''}',
+        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+      ),
+    ));
+
+    // Prevent submitting if total hours == 0
+    if (totalHours == 0) {
+      _showErrorDialog("Vous devez saisir au moins une heure avant de soumettre.");
+      return;
+    }
+
+    // Show confirmation dialog with recap
+    final shouldSave = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Récapitulatif des heures'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: recapItems,
+            ),
+          ),
+          actions: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Modifier'),
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8.0),
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Theme.of(context).primaryColor,
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('Confirmer'),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        );
+      },
+    );
+    
+    if (shouldSave == true) {
+      await _saveHoursToFile();
+    }
+  }
+
+  // Store controllers in a map so they persist and are not recreated
+  final Map<String, Map<String, TextEditingController>> _hoursControllers = {};
+
+  Widget _buildTaskItem(String section, String task) {
+    final isSelected = _selectedTasks[section]?[task] ?? false;
+    _hoursControllers[section] ??= {};
+    if (_hoursControllers[section]![task] == null) {
+      _hoursControllers[section]![task] = TextEditingController(text: _taskHours[section]?[task] ?? '');
+    }
+    final hoursController = _hoursControllers[section]![task]!;
+
+    // Update the controller text only if needed (avoid cursor jump)
+    if (hoursController.text != (_taskHours[section]?[task] ?? '')) {
+      hoursController.text = _taskHours[section]?[task] ?? '';
+      hoursController.selection = TextSelection.fromPosition(TextPosition(offset: hoursController.text.length));
+    }
+
+    
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
+      child: Row(
+        children: [
+          Checkbox(
+            value: isSelected,
+            onChanged: (value) {
+              updateSelectedTask(section, task, value ?? false);
+              if (!(value ?? false)) {
+                hoursController.clear();
+              }
+            },
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              task,
+              style: TextStyle(
+                fontSize: 16,
+                color: isSelected ? Colors.black87 : Colors.black54,
+              ),
+            ),
+          ),
+          if (isSelected) ...[
+            const SizedBox(width: 16),
+            SizedBox(
+              width: 80,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: hoursController,
+                      keyboardType: TextInputType.number,
+                      decoration: InputDecoration(
+                        hintText: '',
+                        labelText: 'Heures',
+                        labelStyle: TextStyle(color: Theme.of(context).primaryColor),
+                        counterText: '',
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(color: Colors.grey.shade300),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(8),
+                          borderSide: BorderSide(
+                            color: Theme.of(context).primaryColor,
+                            width: 2,
+                          ),
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        isDense: true,
+                        filled: true,
+                        fillColor: Colors.grey.shade50,
+                      ),
+                      onChanged: (value) {
+                        // Autorise la suppression/correction naturelle
+                        if (value.isEmpty) {
+                          setState(() {
+                            _taskHours[section]?[task] = '';
+                            _selectedTasks[section]?[task] = false;
+                          });
+                          return;
+                        }
+                        // Empêche les caractères non numériques
+                        if (!RegExp(r'^\d{1,2}').hasMatch(value)) {
+                          return;
+                        }
+                        // Vérifie la limite
+                        final hours = int.tryParse(value);
+                        if (hours == null) return;
+                        if (hours > 20) {
+                          _showErrorDialog("Le nombre d'heures ne peut pas dépasser 20");
+                          hoursController.clear();
+                          setState(() {
+                            _taskHours[section]?[task] = '';
+                            _selectedTasks[section]?[task] = false;
+                          });
+                          return;
+                        }
+                        setState(() {
+                          _taskHours[section] ??= {};
+                          _taskHours[section]![task] = value;
+                          _selectedTasks[section]![task] = value.isNotEmpty;
+                        });
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
