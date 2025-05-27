@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:path_provider/path_provider.dart';
 import '../providers/task_provider.dart';
 import 'success_screen.dart';
+import 'success_screen_factory.dart';
 import 'name_input_screen.dart';
 import 'company_selection_screen.dart';
 
@@ -84,6 +85,27 @@ class _SceaTaskScreenState extends ConsumerState<SceaTaskScreen> with TickerProv
     {'kilometres': '', 'motif': ''},
   ];
   late TabController _tabController;
+  
+  // Method to restore kilometrage data from previous entries
+  void _restoreKilometrageData(Map<String, dynamic>? kilometrageData) {
+    if (kilometrageData != null && kilometrageData['kilometers'] != null) {
+      // Get the kilometers and reason from the data
+      final double kilometers = kilometrageData['kilometers'] as double;
+      final String reason = kilometrageData['reason'] as String? ?? '';
+      
+      if (kilometers > 0) {
+        // Clear existing entries and add the stored one
+        setState(() {
+          _kilometrageEntries.clear();
+          _kilometrageEntries.add({
+            'kilometres': kilometers.toString(),
+            'motif': reason
+          });
+        });
+        debugPrint('Restored kilometrage data: $kilometers km, Reason: $reason');
+      }
+    }
+  }
 
   @override
   void initState() {
@@ -132,6 +154,9 @@ class _SceaTaskScreenState extends ConsumerState<SceaTaskScreen> with TickerProv
       if (widget.isCorrection) {
         // En mode correction, on charge simplement les données existantes
         await taskNotifier.loadCorrectionData(employeeId, formattedDate);
+        
+        // Restore kilometrage data if available
+        _restoreKilometrageData(ref.read(taskProvider).kilometrageData);
       } else {
         // Vérifier si l'utilisateur a déjà saisi ses heures aujourd'hui
         final hasEntry = await taskNotifier.checkTodaysEntry(employeeId);
@@ -250,17 +275,24 @@ class _SceaTaskScreenState extends ConsumerState<SceaTaskScreen> with TickerProv
   Future<void> _saveData() async {
     final taskNotifier = ref.read(taskProvider.notifier);
     
-    // Vérifier si au moins une tâche est sélectionnée
-    bool hasSelectedTask = false;
+    // Vérifier si au moins une tâche est sélectionnée ET a des heures (jour OU nuit) renseignées
+    bool hasValidTask = false;
     for (var task in taskNotifier.getCompanyTasks('SCEA')) {
       if (task['selected'] == true) {
-        hasSelectedTask = true;
-        break;
+        // Vérifier si la tâche a des heures de jour OU de nuit renseignées
+        final bool hasDayHours = task['hours'].toString().trim().isNotEmpty;
+        final bool hasNightHours = task.containsKey('night_hours') && 
+            task['night_hours'].toString().trim().isNotEmpty;
+            
+        if (hasDayHours || hasNightHours) {
+          hasValidTask = true;
+          break;
+        }
       }
     }
     
-    if (!hasSelectedTask) {
-      _showErrorDialog('Veuillez sélectionner au moins une tâche');
+    if (!hasValidTask) {
+      _showErrorDialog('Veuillez sélectionner au moins une tâche et saisir des heures (jour ou nuit)');
       return;
     }
     
@@ -496,11 +528,49 @@ class _SceaTaskScreenState extends ConsumerState<SceaTaskScreen> with TickerProv
     if (confirm == true) {
       try {
         taskNotifier.setLoading(true);
+        // Récupérer les tâches sélectionnées
+        final selectedTasks = taskNotifier.getCompanyTasks('SCEA')
+            .where((t) => t['selected'] == true)
+            .toList();
+        
+        // Associer chaque kilométrage à une tâche spécifique
+        // Pour simplifier, associons chaque entrée de kilométrage à une tâche différente
+        final validKilometrageEntries = _kilometrageEntries
+            .where((e) => e['kilometres'] != null && e['kilometres']!.trim().isNotEmpty)
+            .toList();
+            
+        if (validKilometrageEntries.isNotEmpty && selectedTasks.isNotEmpty) {
+          // Parcourir les tâches sélectionnées et attribuer les kilomètres
+          int kmIndex = 0;
+          for (var task in selectedTasks) {
+            if (kmIndex < validKilometrageEntries.length) {
+              // Attribuer le kilométrage à cette tâche
+              task['kilometers'] = double.tryParse(validKilometrageEntries[kmIndex]['kilometres']!) ?? 0.0;
+              task['reason'] = validKilometrageEntries[kmIndex]['motif'] ?? '';
+              kmIndex++;
+            }
+          }
+        }
+        
+        // Calculer le total des kilomètres pour la compatibilité (en cas de besoin)
+        final totalKilometers = _kilometrageEntries
+            .where((e) => e['kilometres'] != null && e['kilometres']!.trim().isNotEmpty)
+            .fold<double>(0.0, (sum, e) => sum + (double.tryParse(e['kilometres']!) ?? 0.0));
+            
+        // Concaténer les raisons pour la compatibilité (en cas de besoin)
+        final allReasons = _kilometrageEntries
+            .where((e) => e['kilometres'] != null && e['kilometres']!.trim().isNotEmpty && e['motif'] != null && e['motif']!.trim().isNotEmpty)
+            .map((e) => e['motif']!.trim())
+            .join('; ');
+        
+        // Use ref.read instead of ref.watch to avoid widget disposal issues
         final filePath = await taskNotifier.saveData(
           'SCEA',
           widget.firstName,
           widget.lastName,
-          taskHours: ref.watch(taskProvider).taskHours['SCEA'] ?? {},
+          taskHours: ref.read(taskProvider).taskHours['SCEA'] ?? {},
+          kilometers: totalKilometers, // Pour compatibilité
+          reason: allReasons, // Pour compatibilité
         );
         
         final prefs = await SharedPreferences.getInstance();
@@ -513,17 +583,30 @@ class _SceaTaskScreenState extends ConsumerState<SceaTaskScreen> with TickerProv
         await prefs.setString('lastEntryLastName', widget.lastName);
         debugPrint('SCEA - Sauvegarde utilisateur: ${widget.firstName} ${widget.lastName}');
         
+        // Extract all provider data synchronously before any await or navigation
+        final Map<String, Map<String, String>> detachedTaskHours = {};
+        final Map<String, dynamic> taskHoursData = {};
+        taskHoursData.addAll(Map<String, dynamic>.from(ref.read(taskProvider).taskHours));
+        for (final companyKey in taskHoursData.keys) {
+          if (taskHoursData[companyKey] != null) {
+            detachedTaskHours[companyKey] = {};
+            final companyData = taskHoursData[companyKey] as Map<String, dynamic>?;
+            if (companyData != null) {
+              for (final taskKey in companyData.keys) {
+                detachedTaskHours[companyKey]![taskKey] = companyData[taskKey].toString();
+              }
+            }
+          }
+        }
+        // Only then check if mounted and navigate
         if (mounted) {
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(
-              builder: (context) => SuccessScreen(
-                firstName: widget.firstName,
-                lastName: widget.lastName,
-                taskHours: ref.watch(taskProvider).taskHours,
-                filePath: filePath,
-                companyName: 'SCEA',
-              ),
-            ),
+          SuccessScreenFactory.navigateToSuccessScreen(
+            context,
+            firstName: widget.firstName,
+            lastName: widget.lastName,
+            taskHours: detachedTaskHours,
+            filePath: filePath,
+            companyName: 'SCEA',
           );
         }
       } catch (e) {

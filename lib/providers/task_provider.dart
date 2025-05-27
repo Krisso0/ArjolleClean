@@ -89,7 +89,7 @@ class TaskNotifier extends StateNotifier<TaskState> {
   }
   
   // Sauvegarder les données pour une entreprise spécifique
-  Future<String> saveData(String company, String firstName, String lastName, {required Map<String, String> taskHours, bool isEditing = false}) async {
+  Future<String> saveData(String company, String firstName, String lastName, {required Map<String, String> taskHours, bool isEditing = false, double kilometers = 0.0, String reason = ''}) async {
     try {
       final today = DateTime.now();
       final formattedDate = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
@@ -113,23 +113,44 @@ class TaskNotifier extends StateNotifier<TaskState> {
       
       debugPrint('Préparation des tâches sélectionnées:');
       for (var task in state.companyTasks[company]!) {
-        if (task['selected'] == true && task['hours'].isNotEmpty) {
-          final double hours = double.tryParse(task['hours']) ?? 0.0;
-          totalHours += hours;
+        // Check if task is selected AND has either day hours OR night hours
+        final bool hasDayHours = task['hours'].toString().trim().isNotEmpty;
+        final bool hasNightHours = task.containsKey('night_hours') && 
+            task['night_hours'].toString().trim().isNotEmpty;
+        
+        if (task['selected'] == true && (hasDayHours || hasNightHours)) {
+          final double dayHours = hasDayHours ? (double.tryParse(task['hours']) ?? 0.0) : 0.0;
+          final double nightHours = hasNightHours ? (double.tryParse(task['night_hours']) ?? 0.0) : 0.0;
+          final double totalTaskHours = dayHours + nightHours;
+          totalHours += totalTaskHours;
           
           // Formatage pour le nouveau modèle (tasks)
-          selectedTasks.add({
+          final Map<String, dynamic> taskData = {
             'name': task['name'],
-            'hours': hours,
+            'hours': dayHours,
             'section': company,
             'company': company
-          });
+          };
+          
+          // Add night_hours if present
+          if (hasNightHours) {
+            taskData['night_hours'] = nightHours;
+          }
+          
+          selectedTasks.add(taskData);
           
           // Formatage pour l'ancien modèle (taskHours)
           final taskKey = "$company - ${task['name']}";
-          taskHoursMap[taskKey] = hours;
+          taskHoursMap[taskKey] = totalTaskHours;
           
-          debugPrint('  - ${task['name']}: $hours heures');
+          // Log both day and night hours if applicable
+          if (hasDayHours && hasNightHours) {
+            debugPrint('  - ${task['name']}: $dayHours heures de jour, $nightHours heures de nuit');
+          } else if (hasDayHours) {
+            debugPrint('  - ${task['name']}: $dayHours heures de jour');
+          } else {
+            debugPrint('  - ${task['name']}: $nightHours heures de nuit');
+          }
         }
       }
       
@@ -139,6 +160,8 @@ class TaskNotifier extends StateNotifier<TaskState> {
       
       // Créer la nouvelle entrée de temps
       final timeEntry = model.TimeEntryModel(
+        kilometers: kilometers,
+        reason: reason,
         employeeId: employeeId,
         firstName: firstName,
         lastName: lastName,
@@ -151,13 +174,7 @@ class TaskNotifier extends StateNotifier<TaskState> {
       
       debugPrint('Création d\'une nouvelle entrée avec ${selectedTasks.length} tâches et $totalHours heures au total');
       
-      // D'abord, sauvegarder localement
-      await _timeEntryService.saveTimeEntry(timeEntry);
-      
-      // Ensuite, synchroniser avec le serveur (toujours comme une nouvelle entrée)
-      // Correction :
-      // Si on est en mode correction (modification d'heures déjà saisies), il faut mettre à jour l'entrée existante
-      // Sinon, on crée une nouvelle entrée (qui remplacera automatiquement l'ancienne côté API si elle existe pour la même date)
+      // Un seul appel, qui gère tout (local + API)
       await _syncService.saveAndSync(
         timeEntry,
         isUpdating: isEditing, // true si on modifie, false si on crée
@@ -215,23 +232,48 @@ class TaskNotifier extends StateNotifier<TaskState> {
   Future<void> loadCorrectionData(String employeeId, String formattedDate) async {
     try {
       final entry = await _timeEntryService.getTimeEntryByIdAndDate(employeeId, formattedDate);
-      if (entry?.tasks != null) {
+      if (entry != null) {
         final updatedCompanyTasks = Map<String, List<Map<String, dynamic>>>.from(state.companyTasks);
         final updatedTaskHours = Map<String, Map<String, String>>.from(state.taskHours);
-        for (var task in entry!.tasks) {
+        
+        debugPrint('Chargement des données de correction: ${entry.tasks.length} tâches trouvées');
+        
+        // Return the kilometers and reason info for the UI to use
+        final Map<String, dynamic> kilometrageData = {
+          'kilometers': entry.kilometers,
+          'reason': entry.reason
+        };
+        
+        // Log the kilometrage data
+        debugPrint('Chargement des kilomètres: ${entry.kilometers} km, Motif: ${entry.reason}');
+        
+        // Process tasks
+        for (var task in entry.tasks) {
           final company = task['section'] as String;
           if (updatedCompanyTasks.containsKey(company)) {
             final taskIndex = updatedCompanyTasks[company]!.indexWhere((t) => t['name'] == task['name']);
             if (taskIndex != -1) {
+              // Mark task as selected
               updatedCompanyTasks[company]![taskIndex]['selected'] = true;
-              updatedCompanyTasks[company]![taskIndex]['hours'] = task['hours']?.toString() ?? '0';
-              updatedTaskHours[company]![task['name']] = task['hours']?.toString() ?? '0';
+              
+              // Handle day hours
+              final dayHours = task['hours']?.toString() ?? '0';
+              updatedCompanyTasks[company]![taskIndex]['hours'] = dayHours;
+              updatedTaskHours[company]![task['name']] = dayHours;
+              
+              // Handle night hours if present in the task
+              if (task.containsKey('night_hours') && updatedCompanyTasks[company]![taskIndex].containsKey('night_hours')) {
+                final nightHours = task['night_hours']?.toString() ?? '0';
+                updatedCompanyTasks[company]![taskIndex]['night_hours'] = nightHours;
+                debugPrint('Chargé des heures de nuit pour ${task['name']}: $nightHours');
+              }
             }
           }
         }
         state = state.copyWith(
           companyTasks: updatedCompanyTasks,
           taskHours: updatedTaskHours,
+          kilometrageData: kilometrageData, // Add the kilometrage data to the state
         );
       }
     } catch (e) {

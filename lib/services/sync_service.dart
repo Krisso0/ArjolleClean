@@ -20,14 +20,9 @@ class SyncService {
   
   // Enregistrer une nouvelle entrée ou mettre à jour une entrée existante et tenter de la synchroniser immédiatement
   Future<void> saveAndSync(TimeEntryModel entry, {bool isUpdating = false, bool forceDeleteExisting = false}) async {
-    // Sauvegarder localement d'abord
-    await _repository.saveTimeEntry(entry);
-    
-    // Si c'est une mise à jour ou s'il y a un changement d'entreprise, supprimer l'ancienne entrée d'abord
-    if (isUpdating || forceDeleteExisting) {
-      // Suppression via API désactivée (plus de deleteTimeEntry côté client)
-    }
-    await _apiService.upsertTimeEntry(entry);
+  // Sauvegarde locale ET API (déjà géré dans saveTimeEntry)
+  await _repository.saveTimeEntry(entry);
+  // Ne refais PAS un upsert ici !
   }
   
   // Vérifier si l'appareil est connecté à Internet

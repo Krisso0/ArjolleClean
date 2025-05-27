@@ -2,37 +2,38 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/time_entry_model.dart';
+import 'api_service.dart';
 
 class TimeEntryService {
   static const String _storageKey = 'time_entries';
 
   // Sauvegarder une nouvelle entrée de temps (ou remplacer une existante pour le même jour)
-  Future<void> saveTimeEntry(TimeEntryModel entry) async {
+  Future<void> saveTimeEntry(TimeEntryModel entry, {String? baseUrl}) async {
     final prefs = await SharedPreferences.getInstance();
     final entriesJson = prefs.getStringList(_storageKey) ?? [];
-    
     final entries = entriesJson
         .map((json) => TimeEntryModel.fromJson(jsonDecode(json)))
         .toList();
-    
-    // Vérifier si une entrée pour le même jour et le même employé existe déjà
-    final existingIndex = entries.indexWhere((e) => 
-        e.employeeId == entry.employeeId && 
-        e.date == entry.date);
-    
-    if (existingIndex != -1) {
-      // Remplacer l'entrée existante par la nouvelle
-      debugPrint('Remplacement d\'une entrée existante pour ${entry.employeeId} le ${entry.date}');
-      entries[existingIndex] = entry;
+
+    // Un seul appel API, le backend gère l'upsert
+    final api = ApiService();
+    final apiSuccess = await api.upsertTimeEntry(entry, baseUrl: baseUrl);
+
+    // Mise à jour du stockage local seulement si succès API
+    if (apiSuccess) {
+      final existingIndex = entries.indexWhere((e) =>
+          e.employeeId == entry.employeeId &&
+          e.date == entry.date);
+      if (existingIndex != -1) {
+        entries[existingIndex] = entry;
+      } else {
+        entries.add(entry);
+      }
+      final updatedEntriesJson = entries.map((e) => jsonEncode(e.toJson())).toList();
+      await prefs.setStringList(_storageKey, updatedEntriesJson);
     } else {
-      // Ajouter une nouvelle entrée
-      debugPrint('Ajout d\'une nouvelle entrée pour ${entry.employeeId} le ${entry.date}');
-      entries.add(entry);
+      debugPrint('Échec de la sauvegarde côté API, stockage local non mis à jour.');
     }
-    
-    // Mettre à jour le stockage
-    final updatedEntriesJson = entries.map((e) => jsonEncode(e.toJson())).toList();
-    await prefs.setStringList(_storageKey, updatedEntriesJson);
   }
 
   // Supprimer toutes les entrées d'un employé pour une date donnée

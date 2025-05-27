@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 class TimesheetService {
@@ -54,7 +55,7 @@ class TimesheetService {
       );
       return response.statusCode == 201;
     } catch (e) {
-      print('Erreur lors de la soumission: $e');
+      debugPrint('Erreur lors de la soumission: $e');
       return false;
     }
   }
@@ -76,7 +77,7 @@ class TimesheetService {
       }
       return [];
     } catch (e) {
-      print('Erreur lors de la récupération: $e');
+      debugPrint('Erreur lors de la récupération: $e');
       return [];
     }
   }
@@ -98,7 +99,7 @@ class TimesheetService {
       }
       return [];
     } catch (e) {
-      print('Erreur lors de la récupération: $e');
+      debugPrint('Erreur lors de la récupération: $e');
       return [];
     }
   }
@@ -117,7 +118,7 @@ class TimesheetService {
       }
       return null;
     } catch (e) {
-      print('Erreur lors de la récupération des stats: $e');
+      debugPrint('Erreur lors de la récupération des stats: $e');
       return null;
     }
   }
@@ -137,7 +138,7 @@ class TimesheetService {
       );
       return response.statusCode == 200;
     } catch (e) {
-      print('Erreur lors de la modification: $e');
+      debugPrint('Erreur lors de la modification: $e');
       return false;
     }
   }
@@ -153,7 +154,7 @@ class TimesheetService {
       );
       return response.statusCode == 200;
     } catch (e) {
-      print('Erreur lors de la suppression: $e');
+      debugPrint('Erreur lors de la suppression: $e');
       return false;
     }
   }
