@@ -1,9 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
+import '../services/shared_preferences_service.dart';
 
 import '../services/time_entry_service.dart';
 import '../models/time_entry_model.dart' as model;
@@ -184,9 +186,20 @@ class TaskNotifier extends StateNotifier<TaskState> {
     updateCompanyTaskHours(section, taskName, hours);
   }
   
-  // Vérifier si une entrée existe pour aujourd'hui
+  // Vérifier si une entrée existe pour aujourd'hui - utilise SharedPrefsService
   Future<bool> checkTodaysEntry(String employeeId) async {
     try {
+      // Extraire prénom et nom de employeeId (si le format est "prénom nom")
+      final parts = employeeId.split(' ');
+      if (parts.length >= 2) {
+        final firstName = parts[0];
+        final lastName = parts.sublist(1).join(' '); // Pour gérer les noms composés
+        
+        // Utiliser la méthode centralisée
+        return SharedPrefsService.hasUserEnteredHoursToday(firstName, lastName);
+      }
+      
+      // Fallback: ancien système si format incorrect
       final today = DateTime.now();
       final formattedDate = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
       

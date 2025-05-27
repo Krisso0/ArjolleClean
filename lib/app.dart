@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'services/shared_preferences_service.dart';
 
 import 'views/name_input_screen.dart';
 import 'views/company_selection_screen.dart';
@@ -31,24 +32,24 @@ class _MyAppState extends State<MyApp> {
   @override
   void initState() {
     super.initState();
-    _checkIfHoursEnteredToday();
+    _checkEntryStatus();
   }
 
-  Future<void> _checkIfHoursEnteredToday() async {
-    if (!widget.isLoggedIn) return;
-
+  Future<void> _checkEntryStatus() async {
     final prefs = await SharedPreferences.getInstance();
-    final lastEntryDate = prefs.getString('lastEntryDate') ?? '';
-    final today = DateTime.now().toString().split(' ')[0]; // YYYY-MM-DD format
+    final firstName = prefs.getString('firstName') ?? '';
+    final lastName = prefs.getString('lastName') ?? '';
+    
+    // Utiliser la méthode centralisée pour vérifier si l'utilisateur a déjà saisi ses heures
+    final hasEntered = await SharedPrefsService.hasUserEnteredHoursToday(firstName, lastName);
     
     setState(() {
-      // Vérification plus stricte: lastEntryDate doit être non vide ET égal à aujourd'hui
-      hasEnteredHoursToday = lastEntryDate.isNotEmpty && lastEntryDate == today;
+      hasEnteredHoursToday = hasEntered;
       selectedCompany = prefs.getString('selectedCompany') ?? '';
     });
     
     // Débogage
-    debugPrint('_MyAppState - lastEntryDate: "$lastEntryDate", today: "$today", hasEnteredHoursToday: $hasEnteredHoursToday');
+    debugPrint('_MyAppState - hasEnteredHoursToday: $hasEnteredHoursToday (via SharedPrefsService)');
   }
 
   Widget _getHomeScreen() {

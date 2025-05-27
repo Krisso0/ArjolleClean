@@ -28,7 +28,167 @@ class SasTaskScreen extends ConsumerStatefulWidget {
   ConsumerState<SasTaskScreen> createState() => _SasTaskScreenState();
 }
 
+// --- Helper pour la gestion du retour ---
+class BackButtonHandler {
+  static void handleBackPress(BuildContext context, {
+    required bool hasChanges,
+    required VoidCallback onSave,
+    required VoidCallback onReset,
+  }) async {
+    if (!hasChanges) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final shouldSave = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Sauvegarder les modifications ?'),
+        content: const Text('Voulez-vous conserver les données saisies ?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Non', style: TextStyle(color: Colors.red)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Oui'),
+          ),
+        ],
+      ),
+    );
+    if (shouldSave == true) {
+      onSave();
+    } else if (shouldSave == false) {
+      onReset();
+    }
+    Navigator.of(context).pop();
+  }
+}
+
 class _SasTaskScreenState extends ConsumerState<SasTaskScreen> with TickerProviderStateMixin {
+  // --- Tracking des changements ---
+  bool _hasChanges = false;
+
+  // --- Ajout des valeurs initiales pour comparaison ---
+  late List<Map<String, dynamic>> _initialTasks;
+  late List<Map<String, String>> _initialKilometrageEntries;
+
+  // --- Ajout des listeners pour détection automatique ---
+  void _setupChangeTracking() {
+    // Prendre un snapshot initial des tâches et kilométrage
+    final taskNotifier = ref.read(taskProvider.notifier);
+    _initialTasks = List<Map<String, dynamic>>.from(
+      taskNotifier.getCompanyTasks('SAS').map((t) => Map<String, dynamic>.from(t)),
+    );
+    _initialKilometrageEntries = List<Map<String, String>>.from(
+      _kilometrageEntries.map((e) => Map<String, String>.from(e)),
+    );
+  }
+
+  void _detectChanges() {
+    final taskNotifier = ref.read(taskProvider.notifier);
+    final currentTasks = taskNotifier.getCompanyTasks('SAS');
+    bool changed = false;
+    for (int i = 0; i < currentTasks.length; i++) {
+      final t = currentTasks[i];
+      final tInit = i < _initialTasks.length ? _initialTasks[i] : null;
+      if (tInit == null ||
+          t['selected'] != tInit['selected'] ||
+          t['hours'] != tInit['hours'] ||
+          (t.containsKey('night_hours') && t['night_hours'] != tInit['night_hours'])) {
+        changed = true;
+        break;
+      }
+    }
+    for (int i = 0; i < _kilometrageEntries.length; i++) {
+      final e = _kilometrageEntries[i];
+      final eInit = i < _initialKilometrageEntries.length ? _initialKilometrageEntries[i] : null;
+      if (eInit == null || e['kilometres'] != eInit['kilometres'] || e['motif'] != eInit['motif']) {
+        changed = true;
+        break;
+      }
+    }
+    if (_hasChanges != changed) {
+      setState(() {
+        _hasChanges = changed;
+      });
+    }
+  }
+
+  // --- À appeler après chaque modification d'un champ ---
+  void _onAnyFieldChanged() {
+    _detectChanges();
+  }
+
+  // --- Sauvegarde toutes les données sans navigation ---
+  void _saveAllData() async {
+    final taskNotifier = ref.read(taskProvider.notifier);
+    
+    // Vérifier si au moins une tâche est sélectionnée
+    bool hasSelectedTask = false;
+    for (var task in taskNotifier.getCompanyTasks('SAS')) {
+      if (task['selected'] == true) {
+        hasSelectedTask = true;
+        break;
+      }
+    }
+    
+    if (!hasSelectedTask) {
+      // Ne pas afficher d'erreur ici, simplement revenir
+      return;
+    }
+    
+    try {
+      // Sauvegarde directe sans demander confirmation
+      taskNotifier.setLoading(true);
+      await taskNotifier.saveData(
+        'SAS',
+        widget.firstName,
+        widget.lastName,
+        taskHours: ref.watch(taskProvider).taskHours['SAS'] ?? {},
+      );
+      
+      // Enregistrer dans les préférences
+      final prefs = await SharedPreferences.getInstance();
+      final today = DateTime.now().toString().split(' ')[0];
+      await prefs.setString('selectedCompany', 'SAS');
+      await prefs.setString('lastEntryDate', today);
+      await prefs.setString('lastEntryFirstName', widget.firstName);
+      await prefs.setString('lastEntryLastName', widget.lastName);
+      
+      // Important: ne pas rediriger vers l'écran de succès
+    } catch (e) {
+      if (mounted) {
+        _showErrorDialog('Erreur lors de l\'enregistrement: $e');
+      }
+    } finally {
+      if (mounted) {
+        taskNotifier.setLoading(false);
+        // Uniquement appeler cette méthode si le widget est toujours monté
+        _setupChangeTracking(); // reset snapshot après save
+      }
+    }
+  }
+
+  // --- Réinitialise tous les champs (checkboxes, textfields, kilométrage) ---
+  void _resetAllFields() {
+    final taskNotifier = ref.read(taskProvider.notifier);
+    for (var task in taskNotifier.getCompanyTasks('SAS')) {
+      task['selected'] = false;
+      task['hours'] = '';
+      if (task.containsKey('night_hours')) {
+        task['night_hours'] = '';
+      }
+    }
+    for (var entry in _kilometrageEntries) {
+      entry['kilometres'] = '';
+      entry['motif'] = '';
+    }
+    setState(() {});
+    _setupChangeTracking();
+  }
+
   final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
       FlutterLocalNotificationsPlugin();
 
@@ -103,6 +263,7 @@ class _SasTaskScreenState extends ConsumerState<SasTaskScreen> with TickerProvid
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initData();
+      _setupChangeTracking();
     });
   }
 
@@ -581,6 +742,7 @@ class _SasTaskScreenState extends ConsumerState<SasTaskScreen> with TickerProvid
                 GestureDetector(
                   onTap: () {
                     taskNotifier.toggleCompanyTask('SAS', task['name']);
+                    _onAnyFieldChanged();
                   },
                   child: Container(
                     width: 24,
@@ -652,6 +814,7 @@ class _SasTaskScreenState extends ConsumerState<SasTaskScreen> with TickerProvid
                       initialValue: task['hours'],
                       onChanged: (value) {
                         taskNotifier.updateCompanyTaskHours('SAS', task['name'], value);
+                        _onAnyFieldChanged();
                       },
                     ),
                   ),
@@ -763,6 +926,7 @@ class _SasTaskScreenState extends ConsumerState<SasTaskScreen> with TickerProvid
                       setState(() {
                         _kilometrageEntries[index]['kilometres'] = value;
                       });
+                      _onAnyFieldChanged();
                     },
                     initialValue: _kilometrageEntries[index]['kilometres'],
                   ),
@@ -779,6 +943,7 @@ class _SasTaskScreenState extends ConsumerState<SasTaskScreen> with TickerProvid
                       setState(() {
                         _kilometrageEntries[index]['motif'] = value;
                       });
+                      _onAnyFieldChanged();
                     },
                     initialValue: _kilometrageEntries[index]['motif'],
                   ),
@@ -819,69 +984,20 @@ class _SasTaskScreenState extends ConsumerState<SasTaskScreen> with TickerProvid
     _resetInactivityTimer();
     final taskState = ref.watch(taskProvider);
     
-    // Si PopScope pose problème avec la signature, utiliser WillPopScope à la place :
-    return WillPopScope(
-      onWillPop: () async {
-        // Vérifier s'il y a des heures ou kilomètres remplis
-        bool hasFilledEntries = false;
-        final taskNotifier = ref.read(taskProvider.notifier);
-        for (var task in taskNotifier.getCompanyTasks('SAS')) {
-          if ((task['selected'] == true && task['hours'] != null && task['hours'].toString().trim().isNotEmpty && task['hours'].toString().trim() != '0' && task['hours'].toString().trim() != '0.0') ||
-              (task['night_hours'] != null && task['night_hours'].toString().trim().isNotEmpty && task['night_hours'].toString().trim() != '0' && task['night_hours'].toString().trim() != '0.0')) {
-            hasFilledEntries = true;
-            break;
-          }
-        }
-        for (var entry in _kilometrageEntries) {
-          if (entry['kilometres'] != null && entry['kilometres']!.trim().isNotEmpty && entry['kilometres']!.trim() != '0' && entry['kilometres']!.trim() != '0.0') {
-            hasFilledEntries = true;
-            break;
-          }
-        }
-        if (!hasFilledEntries) return true;
-        final result = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Attention'),
-            content: const Text('Voulez-vous conserver les heures/kilométrage remplies ?'),
-            actions: [
-              TextButton(
-                onPressed: () {
-                  // Supprimer toutes les entrées remplies
-                  for (var task in taskNotifier.getCompanyTasks('SAS')) {
-                    if (task['selected'] == true) {
-                      task['hours'] = '';
-                      if (task.containsKey('night_hours')) {
-                        task['night_hours'] = '';
-                      }
-                      task['selected'] = false;
-                    }
-                  }
-                  for (var entry in _kilometrageEntries) {
-                    entry['kilometres'] = '';
-                    entry['motif'] = '';
-                  }
-                  Navigator.of(context).pop(false);
-                },
-                child: const Text('Non'),
-              ),
-              TextButton(
-                onPressed: () {
-                  Navigator.of(context).pop(true);
-                },
-                child: const Text('Oui'),
-              ),
-            ],
-          ),
-        );
-        if (!mounted) return false;
-        return result == true;
-      },
-      child: Scaffold(
+    // --- Ajout du bouton retour personnalisé avec confirmation ---
+    return Scaffold(
       backgroundColor: Colors.grey.shade50,
       appBar: AppBar(
-        leading: const BackButton(),
-        automaticallyImplyLeading: true,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => BackButtonHandler.handleBackPress(
+            context,
+            hasChanges: _hasChanges,
+            onSave: _saveAllData,
+            onReset: _resetAllFields,
+          ),
+        ),
+        automaticallyImplyLeading: false,
         title: const Text('Saisie des heures - SAS'),
         backgroundColor: Theme.of(context).colorScheme.primary,
         foregroundColor: Colors.white,
@@ -972,27 +1088,25 @@ class _SasTaskScreenState extends ConsumerState<SasTaskScreen> with TickerProvid
                       child: SizedBox(
                         width: double.infinity,
                         height: 48,
-                        child: ElevatedButton(
-                          onPressed: _saveData,
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Theme.of(context).colorScheme.primary,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            elevation: 2,
+                                              child: ElevatedButton(
+                        onPressed: _saveData,
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Theme.of(context).colorScheme.primary,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
                           ),
-                          child: const Text(
-                            'Enregistrer',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-                          ),
+                          elevation: 2,
+                        ),
+                        child: const Text(
+                          'Enregistrer',
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
                         ),
                       ),
                     ),
-                  ],
-                ),
-        ),
+                  ),
+                ],
+              ),
     );
   }
 }
-

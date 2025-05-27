@@ -5,20 +5,10 @@ import '../views/name_input_screen.dart';
 import '../views/company_selection_screen.dart';
 import '../views/success_screen.dart';
 
-// Vérifie si l'utilisateur actuel correspond à celui qui a déjà saisi des heures
-Future<bool> userMatchesLastEntryUser(String firstName, String lastName) async {
-  final prefs = await SharedPreferences.getInstance();
-  final lastEntryFirstName = prefs.getString('lastEntryFirstName') ?? '';
-  final lastEntryLastName = prefs.getString('lastEntryLastName') ?? '';
-  
-  final bool matches = firstName.isNotEmpty && 
-                      lastName.isNotEmpty && 
-                      firstName == lastEntryFirstName && 
-                      lastName == lastEntryLastName;
-  
-  debugPrint('startup_router - Vérification utilisateur: $firstName $lastName vs dernier utilisateur: $lastEntryFirstName $lastEntryLastName - Match: $matches');
-  
-  return matches;
+// Vérifie si l'utilisateur a déjà saisi ses heures aujourd'hui (utilise la méthode centralisée)
+Future<bool> hasUserEnteredHoursToday(String firstName, String lastName, [String? company]) {
+  // Utiliser la méthode centralisée pour une logique cohérente dans toute l'application
+  return SharedPrefsService.hasUserEnteredHoursToday(firstName, lastName, company);
 }
 
 Future<Widget> getHomeScreen(UserSession session) async {
@@ -27,15 +17,16 @@ Future<Widget> getHomeScreen(UserSession session) async {
   // Si l'utilisateur n'est pas connecté, afficher l'écran de saisie du nom
   if (!session.isLoggedIn) return const NameInputScreen();
 
-  // Vérifier si l'utilisateur actuel correspond à celui qui a saisi des heures
-  final bool userMatches = await userMatchesLastEntryUser(session.firstName, session.lastName);
+  // Vérifier si l'utilisateur a déjà saisi ses heures aujourd'hui
+  // Utilise la méthode centralisée qui vérifie à la fois l'utilisateur et la date
+  final bool hasEnteredToday = await hasUserEnteredHoursToday(session.firstName, session.lastName);
   
-  if (userMatches) {
-    // L'utilisateur actuel est le même que celui qui a saisi des heures, rediriger vers l'écran de succès
+  if (hasEnteredToday) {
+    // L'utilisateur a déjà saisi des heures aujourd'hui, rediriger vers l'écran de succès
     final prefs = await SharedPreferences.getInstance();
     final selectedCompany = prefs.getString('selectedCompany') ?? '';
     
-    debugPrint('startup_router - Redirection vers Success Screen car même utilisateur');
+    debugPrint('startup_router - Redirection vers Success Screen car l\'utilisateur a déjà saisi ses heures aujourd\'hui');
     return SuccessScreen(
       firstName: session.firstName,
       lastName: session.lastName,
