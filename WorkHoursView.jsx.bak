@@ -1,0 +1,1091 @@
+import React, { useEffect, useState } from 'react';
+import { 
+  Tabs, Tab, Box, Typography, CircularProgress, Paper, Button, Chip,
+  Card, CardContent, Divider, Grid, IconButton, Tooltip, Alert, Badge,
+  Dialog, DialogTitle, DialogContent, DialogActions, Table, TableHead,
+  TableBody, TableRow, TableCell, Select, MenuItem, FormControl, InputLabel,
+  TextField, Collapse
+} from '@mui/material';
+
+import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
+import ViewWeekIcon from '@mui/icons-material/ViewWeek';
+import ViewDayIcon from '@mui/icons-material/ViewDay';
+import NightlightIcon from '@mui/icons-material/Nightlight';
+import WbSunnyIcon from '@mui/icons-material/WbSunny';
+import DirectionsCarIcon from '@mui/icons-material/DirectionsCar';
+import CommentIcon from '@mui/icons-material/Comment';
+import BusinessIcon from '@mui/icons-material/Business';
+import WorkIcon from '@mui/icons-material/Work';
+import AccessTimeIcon from '@mui/icons-material/AccessTime';
+import SearchIcon from '@mui/icons-material/Search';
+import ClearIcon from '@mui/icons-material/Clear';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
+import axios from 'axios';
+import { DataGrid } from '@mui/x-data-grid';
+
+
+
+// Utiliser directement l'URL Heroku au lieu de la variable d'environnement
+const API_URL = 'https://arjolle-backend-3a069b6e3341.herokuapp.com';
+
+// Détermine si une entrée contient des heures de nuit
+function separateDayNight(entry) {
+  // Vérifie d'abord si des heures de nuit sont explicitement définies dans les tâches
+  if (entry.tasks && entry.tasks.length > 0) {
+    // Si une tâche contient des night_hours > 0, on considère que cette entrée a des heures de nuit
+    const hasNightHours = entry.tasks.some(task => task.night_hours && task.night_hours > 0);
+    if (hasNightHours) return 'Nuit';
+  }
+  
+  // Sinon, vérifie l'heure de début (si disponible)
+  if (entry.heure && entry.heure.includes(':')) {
+    // Heures de nuit : 21h-6h
+    const start = parseInt(entry.heure.split(':')[0], 10);
+    if (!isNaN(start) && (start >= 21 || start < 6)) return 'Nuit';
+  }
+  
+  return 'Jour';
+}
+
+// Formatage des nombres avec 2 décimales
+const formatNumber = (num) => {
+  const value = Number(num);
+  // Si le nombre est entier (pas de décimale), retourner juste le nombre entier
+  if (Math.floor(value) === value) {
+    return Math.floor(value).toString();
+  }
+  // Sinon, afficher avec une décimale
+  return value.toFixed(1);
+};
+
+// Formater une date au format français
+const formatDate = (dateString) => {
+  if (!dateString) return '';
+  const date = new Date(dateString);
+  return date.toLocaleDateString('fr-FR', { 
+    day: '2-digit', 
+    month: '2-digit', 
+    year: 'numeric' 
+  });
+};
+
+function WorkHoursView({ employeeId }) {
+  const [tabValue, setTabValue] = useState(0);
+  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
+  const [hours, setHours] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [kmDialogOpen, setKmDialogOpen] = useState(false);
+  const [kmDialogTitle, setKmDialogTitle] = useState('');
+  const [kmDialogData, setKmDialogData] = useState([]);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [expandedDays, setExpandedDays] = useState({});
+  
+  // États pour la sélection de période dans la vue hebdomadaire
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+
+  useEffect(() => {
+    if (!employeeId) return;
+    setLoading(true);
+    setError(null);
+    
+    // Encoder l'ID pour éviter les problèmes avec les caractères spéciaux
+    const encodedEmployeeId = encodeURIComponent(employeeId);
+    console.log('Chargement des heures pour employé:', employeeId);
+    console.log('URL API:', `${API_URL}/api/employees/${encodedEmployeeId}/hours`);
+    
+    axios.get(`${API_URL}/api/employees/${encodedEmployeeId}/hours`)
+      .then(res => {
+        console.log('Données reçues (nouveau format):', res.data);
+        // S'assurer que les données sont bien un tableau
+        const hoursData = Array.isArray(res.data) ? res.data : [];
+        // Traiter les données pour les adapter au nouveau format
+        setHours(hoursData);
+        setLoading(false);
+      })
+      .catch(err => {
+        console.error('Erreur lors du chargement des heures:', err);
+        setError('Impossible de charger les données. Veuillez réessayer.');
+        setLoading(false);
+      });
+  }, [employeeId]);
+
+
+
+  // Préparation des vues
+  const entreprises = ['CUMA', 'SCEA', 'SAS'];
+  const groupBy = (arr, key) => arr.reduce((acc, obj) => {
+    acc[obj[key]] = acc[obj[key]] || [];
+    acc[obj[key]].push(obj);
+    return acc;
+  }, {});
+
+  // Fonction pour extraire correctement les heures de nuit pour une entrée
+  // Adapté au nouveau format avec tasks comme tableau d'objets avec night_hours
+  const getNightHoursFromEntry = (entry) => {
+    // Si l'entrée a des tâches avec des night_hours, on les additionne (nouveau format principal)
+    if (entry.tasks && Array.isArray(entry.tasks) && entry.tasks.length > 0) {
+      return entry.tasks.reduce((sum, task) => sum + (task.night_hours || 0), 0);
+    }
+    
+    // Compatibilité avec l'ancien format
+    if (entry.night_hours && typeof entry.night_hours === 'number') {
+      return entry.night_hours;
+    }
+    
+    // Si le type de l'entrée est 'Nuit', on considère que toutes les heures sont de nuit
+    if (separateDayNight(entry) === 'Nuit') {
+      return entry.duree || entry.hours || 0;
+    }
+    
+    return 0;
+  };
+
+  // Fonction pour extraire correctement les heures de jour pour une entrée
+  // Adapté au nouveau format avec tasks comme tableau d'objets
+  const getDayHoursFromEntry = (entry) => {
+    // Si l'entrée a des tâches détaillées (nouveau format principal)
+    if (entry.tasks && Array.isArray(entry.tasks) && entry.tasks.length > 0) {
+      return entry.tasks.reduce((sum, task) => {
+        // Calcul heures de jour = heures totales - heures de nuit
+        const taskHours = task.hours || 0;
+        const taskNightHours = task.night_hours || 0;
+        return sum + Math.max(0, taskHours - taskNightHours);
+      }, 0);
+    }
+    
+    // Compatibilité avec l'ancien format
+    if (separateDayNight(entry) === 'Jour') {
+      return entry.duree || entry.hours || 0;
+    }
+    
+    // Fallback: heures totales moins heures de nuit
+    const totalHours = entry.duree || entry.hours || 0;
+    const nightHours = getNightHoursFromEntry(entry);
+    return Math.max(0, totalHours - nightHours);
+  };
+  
+  // Fonction pour calculer les heures de nuit pour une liste d'entrées
+  const calculateNightHours = (entries) => {
+    return entries.reduce((sum, entry) => sum + getNightHoursFromEntry(entry), 0);
+  };
+
+  // Fonction pour calculer les heures de jour pour une liste d'entrées
+  const calculateDayHours = (entries) => {
+    return entries.reduce((sum, entry) => sum + getDayHoursFromEntry(entry), 0);
+  };
+  
+  // Fonction pour obtenir les tâches uniques d'une liste d'entrées
+  const getUniqueTasks = (entries) => {
+    const tasksSet = new Set();
+    entries.forEach(entry => {
+      if (entry.tache) {
+        tasksSet.add(entry.tache);
+      }
+      if (entry.tasks && entry.tasks.length > 0) {
+        entry.tasks.forEach(task => {
+          if (task.name) tasksSet.add(task.name);
+        });
+      }
+    });
+    return Array.from(tasksSet);
+  };
+  
+  // Fonction pour extraire correctement les heures de jour pour une tâche
+  const getDayHoursFromTask = (task) => {
+    // Si la tâche a des day_hours explicites
+    if (task.day_hours && typeof task.day_hours === 'number') {
+      return task.day_hours;
+    }
+    // Sinon, on prend les heures totales moins les heures de nuit
+    const taskHours = task.hours || 0;
+    const taskNightHours = task.night_hours || 0;
+    return Math.max(0, taskHours - taskNightHours);
+  };
+
+  // Fonction pour calculer les heures par tâche
+  // Adapté au nouveau format avec tasks comme tableau d'objets
+  const getHoursByTask = (entries) => {
+    const result = {};
+    
+    entries.forEach(entry => {
+      // Nouveau format principal: entrée avec tableau de tâches
+      if (entry.tasks && Array.isArray(entry.tasks) && entry.tasks.length > 0) {
+        entry.tasks.forEach(task => {
+          if (task.name) {
+            if (!result[task.name]) {
+              result[task.name] = { total: 0, day: 0, night: 0 };
+            }
+            const taskTotalHours = task.hours || 0;
+            const taskNightHours = task.night_hours || 0;
+            const taskDayHours = Math.max(0, taskTotalHours - taskNightHours);
+            
+            result[task.name].total += taskTotalHours;
+            result[task.name].day += taskDayHours;
+            result[task.name].night += taskNightHours;
+          }
+        });
+      }
+      // Compatibilité avec l'ancien format
+      else if (entry.tache) {
+        if (!result[entry.tache]) {
+          result[entry.tache] = { total: 0, day: 0, night: 0 };
+        }
+        const totalHours = entry.duree || entry.hours || 0;
+        const nightHours = getNightHoursFromEntry(entry);
+        const dayHours = getDayHoursFromEntry(entry);
+        
+        result[entry.tache].total += totalHours;
+        result[entry.tache].day += dayHours;
+        result[entry.tache].night += nightHours;
+      }
+    });
+    
+    return result;
+  };
+
+  
+  // Fonction pour calculer le total des kilomètres pour une liste d'entrées
+  // Adapté au nouveau format avec kilometersDetails comme tableau d'objets
+  const calculateTotalKilometers = (entries) => {
+    return entries.reduce((sum, entry) => {
+      // Vérifier si l'entrée a un tableau kilometersDetails
+      if (entry.kilometersDetails && Array.isArray(entry.kilometersDetails)) {
+        // Additionner tous les kilométrages de l'entrée
+        const entryKm = entry.kilometersDetails.reduce((kSum, detail) => {
+          return kSum + (detail.kilometers || 0);
+        }, 0);
+        return sum + entryKm;
+      }
+      // Compatibilité avec l'ancien format
+      else if (entry.kilometers) {
+        return sum + entry.kilometers;
+      }
+      return sum;
+    }, 0);
+  };
+
+  
+  // Fonction pour ouvrir le dialogue avec les détails des kilomètres
+  // Adapté au nouveau format avec kilometersDetails comme tableau d'objets
+  const showKilometersDetail = (entries, title) => {
+    const detailedData = [];
+    
+    entries.forEach(entry => {
+      // Format date pour l'affichage
+      const dateStr = formatDate(entry.date);
+      
+      // Nouveau format avec kilometersDetails comme tableau
+      if (entry.kilometersDetails && Array.isArray(entry.kilometersDetails) && entry.kilometersDetails.length > 0) {
+        entry.kilometersDetails.forEach(detail => {
+          detailedData.push({
+            detailString: `${dateStr} ${detail.kilometers}km: ${detail.reason || ''}`
+          });
+        });
+      }
+      // Compatibilité avec l'ancien format
+      else if (entry.kilometersDetailString) {
+        detailedData.push({
+          detailString: entry.kilometersDetailString
+        });
+      }
+    });
+    
+    setKmDialogData(detailedData);
+    setKmDialogTitle(title);
+    setKmDialogOpen(true);
+  };
+
+
+  // Fonction pour filtrer les entrées par mois
+  const filterByMonth = entries => {
+    if (!entries) return [];
+    return entries.filter(entry => {
+      const date = new Date(entry.date);
+      return date.getMonth() === selectedMonth && date.getFullYear() === selectedYear;
+    });
+  };
+
+  // Fonction pour adapter le format des données au nouveau schéma
+  const adaptDataFormat = (entries) => {
+    if (!entries) return [];
+    
+    return entries.map(entry => {
+      // S'assurer que le champ entreprise est correctement défini (nouveau = company, ancien = entreprise)
+      const entreprise = entry.company || entry.entreprise || '';
+      
+      return {
+        ...entry,
+        entreprise // S'assurer que le champ entreprise est toujours présent pour le groupBy
+      };
+    });
+  };
+
+  // Vue mensuelle
+  const monthView = () => {
+    const adaptedHours = adaptDataFormat(hours);
+    const filteredHours = filterByMonth(adaptedHours);
+    const byEntreprise = groupBy(filteredHours, 'entreprise');
+    
+    // Noms des mois en français
+    const moisFrancais = [
+      'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+      'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
+    ];
+    
+    return (
+      <Box>
+        <Box sx={{ mb: 3, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Typography variant="h6">
+            Récapitulatif mensuel: {moisFrancais[selectedMonth]} {selectedYear}
+          </Typography>
+          
+          <Box sx={{ display: 'flex', gap: 2 }}>
+            <FormControl size="small" variant="outlined" sx={{ minWidth: 120 }}>
+              <InputLabel id="month-select-label">Mois</InputLabel>
+              <Select
+                labelId="month-select-label"
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(Number(e.target.value))}
+                label="Mois"
+              >
+                {moisFrancais.map((mois, index) => (
+                  <MenuItem key={index} value={index}>{mois}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            
+            <FormControl size="small" variant="outlined" sx={{ minWidth: 100 }}>
+              <InputLabel id="year-select-label">Année</InputLabel>
+              <Select
+                labelId="year-select-label"
+                value={selectedYear}
+                onChange={(e) => setSelectedYear(Number(e.target.value))}
+                label="Année"
+              >
+                {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i).map(year => (
+                  <MenuItem key={year} value={year}>{year}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Box>
+        </Box>
+        
+        
+        
+        <Grid container spacing={3}>
+          {entreprises.map(ent => {
+            const entriesForCompany = byEntreprise[ent] || [];
+            const totalHours = entriesForCompany.reduce((s, h) => s + h.duree, 0) || 0;
+            const totalNightHours = calculateNightHours(entriesForCompany);
+            const totalDayHours = calculateDayHours(entriesForCompany);
+            
+            if (entriesForCompany.length === 0) return null;
+            
+            return (
+              <Grid item xs={12} md={6} key={ent}>
+                <Card elevation={1} sx={{ height: '100%', borderRadius: 2 }}>
+                  <CardContent>
+                    <Box display="flex" alignItems="center" mb={2}>
+                      <BusinessIcon color="primary" sx={{ mr: 1 }} />
+                      <Typography variant="h6" color="primary.dark" fontWeight="medium">
+                        {ent}
+                      </Typography>
+                    </Box>
+                    
+                    <Grid container spacing={2} sx={{ mb: 3 }}>
+                      <Grid item xs={3}>
+                        <Box sx={{ p: 2, bgcolor: 'background.default', borderRadius: 2, textAlign: 'center', minHeight: '120px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                          <Typography variant="body2" color="text.secondary" gutterBottom>Total heures</Typography>
+                          <Typography variant="h5" color="text.primary" fontWeight="medium">
+                            {formatNumber(totalHours)}h
+                          </Typography>
+                        </Box>
+                      </Grid>
+                      <Grid item xs={3}>
+                        <Box sx={{ p: 2, bgcolor: 'background.default', borderRadius: 2, textAlign: 'center', minHeight: '120px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                          <Box display="flex" alignItems="center" justifyContent="center">
+                            <WbSunnyIcon fontSize="small" sx={{ color: 'text.primary', mr: 0.5 }} />
+                            <Typography variant="body2" color="text.secondary">Jour</Typography>
+                          </Box>
+                          <Typography variant="h5" color="text.primary" fontWeight="medium">
+                            {formatNumber(totalDayHours)}h
+                          </Typography>
+                        </Box>
+                      </Grid>
+                      <Grid item xs={3}>
+                        <Box sx={{ p: 2, bgcolor: 'background.default', borderRadius: 2, textAlign: 'center', minHeight: '120px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                          <Box display="flex" alignItems="center" justifyContent="center">
+                            <NightlightIcon fontSize="small" sx={{ color: 'text.primary', mr: 0.5 }} />
+                            <Typography variant="body2" color="text.secondary">Nuit</Typography>
+                          </Box>
+                          <Typography variant="h5" color="text.primary" fontWeight="medium">
+                            {formatNumber(totalNightHours)}h
+                          </Typography>
+                        </Box>
+                      </Grid>
+                      <Grid item xs={3}>
+                        <Box 
+                          sx={{ 
+                            p: 2, 
+                            bgcolor: 'background.default', 
+                            borderRadius: 2, 
+                            textAlign: 'center',
+                            cursor: 'pointer',
+                            minHeight: '120px',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            justifyContent: 'center',
+                            transition: 'all 0.2s',
+                            '&:hover': { 
+                              transform: 'translateY(-2px)',
+                              boxShadow: 1
+                            }
+                          }}>
+                          <Typography variant="h5" color="text.primary" fontWeight="medium">
+                            {formatNumber(calculateTotalKilometers(list))} km
+                          </Typography>
+                          <Typography variant="caption" color="text.primary" sx={{ display: 'block', fontWeight: 'bold' }}>
+                            Détail
+                          </Typography>
+                        </Box>
+                      </Box>
+                    </Grid>
+                  </Grid>
+                  
+                  <Typography variant="subtitle1" fontWeight="medium" mb={2}>
+                    <BusinessIcon fontSize="small" sx={{ mr: 1, verticalAlign: 'middle' }} />
+                    Détail par entreprise
+                  </Typography>
+                  
+                  <Box sx={{ bgcolor: 'background.default', p: 2, borderRadius: 2 }}>
+                    
+                    <Grid container spacing={2}>
+                      {entreprises.map(ent => {
+                        const entriesForCompany = list.filter(h => h.entreprise === ent || h.company === ent);
+                        if (entriesForCompany.length === 0) return null;
+                        
+                        // Calcul des heures totales en prenant en compte les deux formats possibles
+                        const companyHours = entriesForCompany.reduce((s, h) => {
+                          // Si l'entrée a des tâches, on additionne les heures de toutes les tâches
+                          if (h.tasks && Array.isArray(h.tasks) && h.tasks.length > 0) {
+                            return s + h.tasks.reduce((taskSum, task) => taskSum + (task.hours || 0), 0);
+                          }
+                          // Sinon on utilise le champ hours ou duree
+                          return s + (h.hours || h.duree || 0);
+                        }, 0);
+                        const companyNightHours = calculateNightHours(entriesForCompany);
+                        const companyDayHours = calculateDayHours(entriesForCompany);
+                        
+                        // Récupérer les heures par tâche pour cette entreprise
+                        const taskHours = getHoursByTask(entriesForCompany);
+                        
+                        return (
+                          <Grid item xs={12} key={ent}>
+                            <Card variant="outlined" sx={{ mb: 2 }}>
+                              <CardContent sx={{ pb: 1 }}>
+                                <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
+                                  <Typography variant="subtitle1" fontWeight="medium" color="primary.dark">
+                                    {ent}
+                                  </Typography>
+                                  <Box>
+                                    <Box sx={{ fontWeight: 'bold', mr: 1 }}>Total: {formatNumber(companyHours)}h</Box>
+                                    <Tooltip title="Heures de jour">
+                                      <Box sx={{ display: 'flex', alignItems: 'center', mr: 1 }}>
+                                        <WbSunnyIcon fontSize="small" sx={{ mr: 0.5, color: 'warning.main' }} />
+                                        {formatNumber(companyDayHours)}h
+                                      </Box>
+                                    </Tooltip>
+                                    <Tooltip title="Heures de nuit">
+                                      <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                                        <NightlightIcon fontSize="small" sx={{ mr: 0.5, color: 'text.primary' }} />
+                                        {formatNumber(companyNightHours)}h
+                                      </Box>
+                                    </Tooltip>
+                                  </Box>
+                                </Box>
+                                
+                                {/* Table des tâches */}
+                                <Typography variant="subtitle2" gutterBottom>
+                                  Détail par tâche
+                                </Typography>
+                                <Table size="small">
+                                  <TableHead>
+                                    <TableRow>
+                                      <TableCell>Tâche</TableCell>
+                                      <TableCell align="center">Total</TableCell>
+                                      <TableCell align="center">Jour</TableCell>
+                                      <TableCell align="center">Nuit</TableCell>
+                                    </TableRow>
+                                  </TableHead>
+                                  <TableBody>
+                                    {Object.entries(taskHours).map(([name, hours]) => (
+                                      <TableRow key={name} hover>
+                                        <TableCell><Typography variant="body2">{name}</Typography></TableCell>
+                                        <TableCell align="center">{formatNumber(hours.total)}h</TableCell>
+                                        <TableCell align="center">
+                                          {formatNumber(hours.day)}h
+                                        </TableCell>
+                                        <TableCell align="center">
+                                          {formatNumber(hours.night)}h
+                                        </TableCell>
+                                      </TableRow>
+                                    ))}
+                                  </TableBody>
+                                </Table>
+                              </CardContent>
+                            </Card>
+                          </Grid>
+                        );
+                      }).filter(Boolean)}
+        };
+      }
+      
+      byDate[dateKey].entries.push(h);
+      byDate[dateKey].entreprises.add(h.entreprise);
+    });
+    
+    // Convertir en tableau et trier par date (la plus récente en premier)
+    const sortedDays = Object.values(byDate).sort((a, b) => {
+      return new Date(b.date) - new Date(a.date);
+    });
+    
+    return (
+      <Box>
+        <Box sx={{ mb: 3, display: 'flex', alignItems: 'center', gap: 2 }}>
+          <TextField
+            label="Rechercher une date"
+            variant="outlined"
+            size="small"
+            fullWidth
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            InputProps={{
+              startAdornment: (
+                <Box sx={{ color: 'action.active', mr: 1 }}>
+                  <CalendarMonthIcon fontSize="small" />
+                </Box>
+              ),
+              endAdornment: searchTerm ? (
+                <IconButton 
+                  size="small" 
+                  onClick={() => setSearchTerm('')}
+                  sx={{ visibility: searchTerm ? 'visible' : 'hidden' }}
+                >
+                  <ClearIcon fontSize="small" />
+                </IconButton>
+              ) : null
+            }}
+            placeholder="JJ/MM/AAAA"
+          />
+        </Box>
+        
+        {sortedDays.map((day, index) => {
+          const dayDate = new Date(day.date);
+          const formattedDate = formatDate(day.date);
+          
+          // Calculer les totaux pour cette journée
+          const totalHours = day.entries.reduce((sum, e) => sum + (e.duree || 0), 0);
+          const totalNightHours = calculateNightHours(day.entries);
+          const totalDayHours = calculateDayHours(day.entries);
+          const totalKilometers = calculateTotalKilometers(day.entries);
+          
+          // Vérifier si ce jour est déplié
+          const isExpanded = expandedDays[day.date] || false;
+          
+          return (
+            <Card key={index} variant="outlined" sx={{ mb: 3, overflow: 'visible' }}>
+              <CardContent sx={{ p: 0 }}>
+                <Box 
+                  sx={{ 
+                    p: 2, 
+                    cursor: 'pointer', 
+                    '&:hover': { bgcolor: 'background.default' },
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center'
+                  }}
+                  onClick={() => toggleDayExpansion(day.date)}
+                >
+                  <Box>
+                    <Typography variant="h6" color="primary.dark" fontWeight="medium">
+                      {formattedDate}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      {new Intl.DateTimeFormat('fr-FR', { weekday: 'long' }).format(dayDate)}
+                    </Typography>
+                  </Box>
+                  <Box display="flex" alignItems="center">
+                    <Box display="flex" gap={1} sx={{ mr: 2 }}>
+                      <Chip 
+                        icon={<AccessTimeIcon fontSize="small" />}
+                        label={`${formatNumber(totalHours)}h`} 
+                        color="primary" 
+                        variant="outlined"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                        }}
+                      />
+                      {totalKilometers > 0 && (
+                        <Tooltip title="Cliquez pour voir le détail">
+                          <Chip 
+                            icon={<DirectionsCarIcon fontSize="small" />}
+                            label={`${formatNumber(totalKilometers)} km`} 
+                            color="secondary"
+                            variant="outlined"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              showKilometersDetail(day.entries, `Détail kilométrage - ${formattedDate}`);
+                            }}
+                            sx={{ cursor: 'pointer' }}
+                          />
+                        </Tooltip>
+                      )}
+                    </Box>
+                    {isExpanded ? 
+                      <ExpandLessIcon color="action" /> : 
+                      <ExpandMoreIcon color="action" />}
+                  </Box>
+                </Box>
+                
+                <Collapse in={isExpanded} timeout="auto" unmountOnExit>
+                  <Divider />
+                  <Box sx={{ p: 2 }}>
+                    {/* Résume des heures */}
+                    <Grid container spacing={2} sx={{ mb: 2 }}>
+                      <Grid item xs={12} sm={6}>
+                        <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                          <WbSunnyIcon fontSize="small" sx={{ color: 'warning.main', mr: 1 }} />
+                          <Typography variant="body1">
+                            Heures de jour: <strong>{formatNumber(totalDayHours)}h</strong>
+                          </Typography>
+                        </Box>
+                        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                          <NightlightIcon fontSize="small" sx={{ color: 'text.primary', mr: 1 }} />
+                          <Typography variant="body1">
+                            Heures de nuit: <strong>{formatNumber(totalNightHours)}h</strong>
+                          </Typography>
+                        </Box>
+                      </Grid>
+                      <Grid item xs={12} sm={6}>
+                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+                          {Array.from(day.entreprises).map(entreprise => (
+                            <Chip 
+                              key={entreprise}
+                              label={entreprise} 
+                              size="small" 
+                              sx={{ 
+                                bgcolor: entreprise === 'CUMA' ? '#e8f5e9' : 
+                                       entreprise === 'SCEA' ? '#e3f2fd' : 
+                                       entreprise === 'SAS' ? '#ffebee' : 'grey.100',
+                                color: entreprise === 'CUMA' ? '#2e7d32' : 
+                                      entreprise === 'SCEA' ? '#1976d2' : 
+                                      entreprise === 'SAS' ? '#d32f2f' : 'text.secondary'
+                              }} 
+                            />
+                          ))}
+                        </Box>
+                      </Grid>
+                    </Grid>
+                    
+                    {/* Table des tâches */}
+                    <Typography variant="subtitle2" fontWeight="medium" gutterBottom>
+                      Détail des tâches
+                    </Typography>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Tâche</TableCell>
+                          <TableCell>Entreprise</TableCell>
+                          <TableCell align="center">Heures</TableCell>
+                          <TableCell align="center">Jour</TableCell>
+                          <TableCell align="center">Nuit</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {day.entries.map((entry, entryIndex) => {
+                          const nightHours = getNightHoursFromEntry(entry);
+                          const dayHours = entry.duree - nightHours;
+                          
+                          return (
+                            <TableRow key={entryIndex} hover>
+                              <TableCell>{entry.tache || '-'}</TableCell>
+                              <TableCell>{entry.entreprise}</TableCell>
+                              <TableCell align="center">{formatNumber(entry.duree)}h</TableCell>
+                              <TableCell align="center">{formatNumber(dayHours)}h</TableCell>
+                              <TableCell align="center">{formatNumber(nightHours)}h</TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </Box>
+                </Collapse>
+              </CardContent>
+            </Card>
+          );
+        })}
+        
+        </Box>
+    );
+  };
+  
+  // Ancienne vue journalière sous forme de DataGrid (non utilisée)
+  const dayViewGrid = () => {
+    const rows = hours.map((h, i) => {
+      // Calcul des heures de nuit
+      let nightHours = 0;
+      if (h.tasks && h.tasks.length > 0) {
+        nightHours = h.tasks.reduce((sum, task) => sum + (task.night_hours || 0), 0);
+      }
+      
+      return {
+        id: i,
+        date: h.date,
+        dateFormatted: formatDate(h.date),
+        heure: h.heure,
+        entreprise: h.entreprise,
+        tache: h.tache,
+        duree: formatNumber(h.duree),
+        dureeNuit: formatNumber(nightHours),
+        dureeJour: formatNumber(h.duree - nightHours),
+        type: separateDayNight(h),
+        kilometers: h.kilometers || 0,
+        reason: h.reason || ""
+      };
+    });
+    
+    // Trier les données par date (la plus récente en premier)
+    const sortedRows = [...rows].sort((a, b) => {
+      return new Date(b.date) - new Date(a.date);
+    });
+    
+    return (
+      <Card elevation={1} sx={{ borderRadius: 2, overflow: 'hidden' }}>
+        <Box sx={{ height: 500, width: '100%' }}>
+          <DataGrid
+            rows={sortedRows}
+            columns={[
+              { 
+                field: 'dateFormatted', 
+                headerName: 'Date', 
+                flex: 1,
+                renderHeader: () => (
+                  <Box display="flex" alignItems="center">
+                    <CalendarMonthIcon fontSize="small" sx={{ mr: 1 }} />
+                    <Typography variant="subtitle2" fontWeight="bold">Date</Typography>
+                  </Box>
+                )
+              },
+              { 
+                field: 'heure', 
+                headerName: 'Heure', 
+                flex: 0.7,
+                renderCell: (params) => (
+                  <Typography variant="body2">{params.value || '-'}</Typography>
+                )
+              },
+              { 
+                field: 'entreprise', 
+                headerName: 'Entreprise', 
+                flex: 1,
+                renderHeader: () => (
+                  <Box display="flex" alignItems="center">
+                    <BusinessIcon fontSize="small" sx={{ mr: 1 }} />
+                    <Typography variant="subtitle2" fontWeight="bold">Entreprise</Typography>
+                  </Box>
+                ),
+                renderCell: (params) => (
+                  <Chip 
+                    label={params.value} 
+                    size="small" 
+                    sx={{ 
+                      bgcolor: params.value === 'CUMA' ? '#e8f5e9' : 
+                              params.value === 'SCEA' ? '#e3f2fd' : 
+                              params.value === 'SAS' ? '#ffebee' : 'grey.100',
+                      color: params.value === 'CUMA' ? '#2e7d32' : 
+                             params.value === 'SCEA' ? '#1976d2' : 
+                             params.value === 'SAS' ? '#d32f2f' : 'text.secondary',
+                      fontWeight: 'medium'
+                    }} 
+                  />
+                )
+              },
+              { 
+                field: 'tache', 
+                headerName: 'Tâche', 
+                flex: 1.3,
+                renderHeader: () => (
+                  <Box display="flex" alignItems="center">
+                    <WorkIcon fontSize="small" sx={{ mr: 1 }} />
+                    <Typography variant="subtitle2" fontWeight="bold">Tâche</Typography>
+                  </Box>
+                ),
+              },
+              { 
+                field: 'duree', 
+                headerName: 'Total (h)', 
+                flex: 0.8,
+                align: 'center',
+                headerAlign: 'center',
+                renderCell: (params) => (
+                  <Typography variant="body2" fontWeight="medium">{params.value}h</Typography>
+                )
+              },
+              { 
+                field: 'dureeJour', 
+                headerName: 'Jour (h)', 
+                flex: 0.8,
+                align: 'center',
+                headerAlign: 'center',
+                renderHeader: () => (
+                  <Box display="flex" alignItems="center" justifyContent="center">
+                    <WbSunnyIcon fontSize="small" sx={{ mr: 1, color: 'warning.main' }} />
+                    <Typography variant="subtitle2" fontWeight="bold">Jour</Typography>
+                  </Box>
+                ),
+                renderCell: (params) => (
+                  <Chip 
+                    label={`${params.value}h`} 
+                    size="small" 
+                    sx={{ bgcolor: 'warning.light', color: 'warning.dark' }} 
+                  />
+                )
+              },
+              { 
+                field: 'dureeNuit', 
+                headerName: 'Nuit (h)', 
+                flex: 0.8,
+                align: 'center',
+                headerAlign: 'center',
+                renderHeader: () => (
+                  <Box display="flex" alignItems="center" justifyContent="center">
+                    <NightlightIcon fontSize="small" sx={{ mr: 1, color: 'text.primary' }} />
+                    <Typography variant="subtitle2" fontWeight="bold">Nuit</Typography>
+                  </Box>
+                ),
+                renderCell: (params) => (
+                  params.value > 0 ? (
+                    <Chip 
+                      label={`${params.value}h`} 
+                      size="small" 
+                      color="primary" 
+                    />
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">-</Typography>
+                  )
+                )
+              },
+              { 
+                field: 'kilometers', 
+                headerName: 'Km', 
+                flex: 0.8,
+                align: 'center',
+                headerAlign: 'center',
+                renderHeader: () => (
+                  <Box display="flex" alignItems="center" justifyContent="center">
+                    <DirectionsCarIcon fontSize="small" sx={{ mr: 1 }} />
+                    <Typography variant="subtitle2" fontWeight="bold">Km</Typography>
+                  </Box>
+                ),
+                renderCell: (params) => (
+                  params.value > 0 ? (
+                    <Chip 
+                      label={params.value} 
+                      size="small" 
+                      variant="outlined" 
+                      color="secondary" 
+                    />
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">-</Typography>
+                  )
+                )
+              },
+              { 
+                field: 'reason', 
+                headerName: 'Raison', 
+                flex: 1.5,
+                renderHeader: () => (
+                  <Box display="flex" alignItems="center">
+                    <CommentIcon fontSize="small" sx={{ mr: 1 }} />
+                    <Typography variant="subtitle2" fontWeight="bold">Raison</Typography>
+                  </Box>
+                ),
+                renderCell: (params) => (
+                  params.value ? (
+                    <Typography variant="body2">{params.value}</Typography>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">-</Typography>
+                  )
+                )
+              },
+            ]}
+            disableRowSelectionOnClick
+            initialState={{
+              pagination: {
+                paginationModel: { pageSize: 10 },
+              },
+            }}
+            pageSizeOptions={[5, 10, 25]}
+            sx={{
+              '& .MuiDataGrid-cell:focus': {
+                outline: 'none'
+              },
+              '& .MuiDataGrid-row:hover': {
+                bgcolor: 'background.default'
+              }
+            }}
+          />
+        </Box>
+      </Card>
+    );
+  };
+
+  if (loading) return (
+    <Box display="flex" justifyContent="center" alignItems="center" sx={{ py: 8 }}>
+      <CircularProgress color="primary" />
+    </Box>
+  );
+  
+  if (error) return null;
+
+  if (hours.length === 0) return null;
+
+  return (
+    <Paper sx={{ p: 0, overflow: 'hidden', boxShadow: 'none' }}>
+      <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.default', px: 2 }}>
+        <Tabs 
+          value={tabValue} 
+          onChange={(_, v) => setTabValue(v)}
+          sx={{ 
+            '& .MuiTab-root': { 
+              minHeight: '64px',
+              textTransform: 'none',
+              fontWeight: 600
+            },
+            '& .Mui-selected': {
+              color: 'text.primary', fontWeight: 'bold',
+            },
+            '& .MuiTabs-indicator': {
+              height: 3,
+              borderRadius: '3px 3px 0 0'
+            }
+          }}
+        >
+          <Tab icon={<CalendarMonthIcon />} label="Mensuelle" iconPosition="start" />
+          <Tab icon={<ViewWeekIcon />} label="Hebdomadaire" iconPosition="start" />
+          <Tab icon={<ViewDayIcon />} label="Journalière" iconPosition="start" />
+        </Tabs>
+      </Box>
+      
+      <Box p={3}>
+        {tabValue === 0 && monthView()}
+        {tabValue === 1 && weekView()}
+        {tabValue === 2 && dayView()}
+      </Box>
+      
+
+      
+      {/* Dialogue pour afficher le détail des kilomètres */}
+      <Dialog 
+        open={kmDialogOpen} 
+        onClose={() => setKmDialogOpen(false)}
+        maxWidth="lg"
+        fullWidth
+      >
+        <DialogTitle>
+          <Box display="flex" alignItems="center">
+            <DirectionsCarIcon sx={{ mr: 1, color: 'secondary.main' }} />
+            {kmDialogTitle}
+          </Box>
+        </DialogTitle>
+        <DialogContent dividers>
+          {kmDialogData.length > 0 ? (
+            <>
+              <Table>
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Date</TableCell>
+                    <TableCell>Entreprise</TableCell>
+                    <TableCell>Tâche associée</TableCell>
+                    <TableCell align="center">Kilomètres</TableCell>
+                    <TableCell>Motif du déplacement</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {kmDialogData.map((item, index) => (
+                    <TableRow key={index} hover>
+                      <TableCell>{item.date}</TableCell>
+                      <TableCell>
+                        <Chip 
+                          label={item.entreprise} 
+                          size="small" 
+                          sx={{ 
+                            bgcolor: item.entreprise === 'CUMA' ? '#e8f5e9' : 
+                                    item.entreprise === 'SCEA' ? '#e3f2fd' : 
+                                    item.entreprise === 'SAS' ? '#ffebee' : 'grey.100',
+                            color: item.entreprise === 'CUMA' ? '#2e7d32' : 
+                                  item.entreprise === 'SCEA' ? '#1976d2' : 
+                                  item.entreprise === 'SAS' ? '#d32f2f' : 'text.secondary',
+                          }}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        {item.task && item.task !== '-' ? (
+                          <Typography variant="body2">{item.task}</Typography>
+                        ) : (
+                          <Typography variant="body2" color="text.secondary">-</Typography>
+                        )}
+                      </TableCell>
+                      <TableCell align="center">
+                        <Chip 
+                          label={`${item.kilometers ? formatNumber(item.kilometers) : 0} km`} 
+                          size="small" 
+                          color="secondary" 
+                          variant="outlined"
+                        />
+                      </TableCell>
+                      <TableCell>
+                        {item.reason && item.reason !== '-' ? (
+                          <Typography variant="body2">{item.reason}</Typography>
+                        ) : (
+                          <Typography variant="body2" color="text.secondary">-</Typography>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  <TableRow>
+                    <TableCell colSpan={3} align="right" sx={{ fontWeight: 'bold' }}>
+                      Total kilomètres :
+                    </TableCell>
+                    <TableCell align="center" sx={{ fontWeight: 'bold' }}>
+                      {formatNumber(kmDialogData.reduce((sum, item) => sum + (item.kilometers || 0), 0))} km
+                    </TableCell>
+                    <TableCell></TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+              <Box mt={2}>
+                
+              </Box>
+            </>
+          ) : (
+            <Typography variant="body1" sx={{ py: 4, textAlign: 'center' }}>
+              Aucun kilométrage enregistré pour cette période.
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setKmDialogOpen(false)} color="primary">
+            Fermer
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </Paper>
+  );
+}
+
+export default WorkHoursView;
